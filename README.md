@@ -1,8 +1,5 @@
 # FreeBSD Network Autotuner
 
-**Author:** Geovanni B.R. (geobarrod)
-**Date:** 2025-12-25  
-
 ## Purpose
 This script dynamically adjusts the TCP stack, congestion control algorithm, buffers, and queues based on real-time network metrics such as latency, packet loss, jitter, throughput, kernel drops, and out-of-order segments.  
 It is designed to optimize FreeBSD networking performance in diverse and changing conditions.
@@ -100,7 +97,7 @@ sudo fbsd-net-autotuner -d -l
 ## Installation
 Clone the repository and run the installer:
 ```sh
-git clone https://github.com/usuario/fbsd-net-autotuner.git
+git clone https://github.com/geobarrod/FBSD-Net-Autotuner.git
 cd fbsd-net-autotuner
 sudo make install
 ```
