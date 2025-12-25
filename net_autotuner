@@ -1,0 +1,93 @@
+#!/bin/sh
+
+# PROVIDE: net_autotuner
+# REQUIRE: NETWORKING
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="net_autotuner"
+rcvar="net_autotuner_enable"
+pidfile="/var/run/${name}.pid"
+
+load_rc_config $name
+
+command="/usr/sbin/daemon"
+daemon_title="${name}"
+script_path="/root/bin/fbsd-net-autotuner"
+
+start_cmd="${name}_start"
+stop_cmd="${name}_stop"
+restart_cmd="${name}_restart"
+status_cmd="${name}_status"
+
+extra_commands="enable disable restart status"
+
+net_autotuner_start()
+{
+    if [ -f "${pidfile}" ]; then
+        pid="$(cat "${pidfile}" 2>/dev/null)"
+        if [ -n "${pid}" ] && ps -p "${pid}" >/dev/null 2>&1; then
+            echo "${name} is already running as PID ${pid}"
+            return 0
+        fi
+        rm -f "${pidfile}"
+    fi
+    echo "Starting ${name}..."
+    ${command} -S -T "${daemon_title}" -p "${pidfile}" \
+        "${script_path}" ${net_autotuner_flags}
+    sleep 0.5
+    if [ -f "${pidfile}" ] && ps -p "$(cat "${pidfile}")" >/dev/null 2>&1; then
+        echo "${name} started (PID $(cat "${pidfile}"))."
+        return 0
+    else
+        echo "Failed to start ${name} (no valid PID)."
+        return 1
+    fi
+}
+
+net_autotuner_stop()
+{
+    echo "Stopping ${name}..."
+    if [ -f "${pidfile}" ]; then
+        pid="$(cat "${pidfile}" 2>/dev/null)"
+        if [ -n "${pid}" ] && ps -p "${pid}" >/dev/null 2>&1; then
+            kill "${pid}" 2>/dev/null || true
+            for i in 1 2 3; do
+                sleep 0.5
+                ps -p "${pid}" >/dev/null 2>&1 || break
+            done
+            ps -p "${pid}" >/dev/null 2>&1 && kill -9 "${pid}" 2>/dev/null || true
+        fi
+        rm -f "${pidfile}"
+        echo "${name} stopped."
+        return 0
+    fi
+    pkill -f "${script_path}" >/dev/null 2>&1 || pkill -f "${daemon_title}" >/dev/null 2>&1
+    echo "${name} not running? (checked ${pidfile})."
+    return 0
+}
+
+net_autotuner_restart()
+{
+    ${name}_stop
+    sleep 0.5
+    ${name}_start
+}
+
+net_autotuner_status()
+{
+    if [ -f "${pidfile}" ]; then
+        pid="$(cat "${pidfile}" 2>/dev/null)"
+        if [ -n "${pid}" ] && ps -p "${pid}" >/dev/null 2>&1; then
+            echo "${name} running (PID ${pid})."
+            return 0
+        fi
+        echo "${name} pidfile present but process not running."
+        return 1
+    fi
+    echo "${name} not running."
+    return 1
+}
+
+run_rc_command "$1"

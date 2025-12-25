@@ -1,0 +1,361 @@
+#!/bin/sh
+# FreeBSD Network Autotuner
+# Author: Geovanni B.R. (geobarrod) <igeo.cu at gmail.com> - 2025-12-05
+#
+# ================================= Documentation ===========================================
+# Purpose:
+#   Dynamically adjusts TCP stack, congestion control algorithm, buffers,
+#   and queues based on real-time network metrics (latency, packet loss, jitter, throughput, and queue drops).
+#
+# Usage:
+#   sudo fbsd-net-autotuner [-d] [-l]
+#
+# Options:
+#   -d   Add date and time to the event log.
+#   -l   Log events to the file /var/log/fbsd-net-autotuner.log
+#
+# Configuration Variables:
+#   TARGET_HOST   Host used for ping measurements (default: 8.8.8.8)
+#   IFACE         Network interface to monitor (default: wlan0)
+#   PING_COUNT    Number of pings per round (default: 10)
+#   INTERVAL_SEC  Interval between measurements in seconds (default: 60)
+#
+# Features:
+#   - Classifies network conditions into tiers (very_slow, slow, medium, fast, very_fast).
+#   - Dynamically selects TCP congestion control algorithm and stack (e.g., cubic, chd, htcp,
+#     dctcp, cdg, vegas, freebsd, bbr, rack).
+#   - Adjusts buffer sizes, ECN, keepalive, delayed ACK, and SACK settings.
+#   - Monitors jitter and disables delayed ACK if jitter is high.
+#   - Monitors intr_queue_drops and increases intr_queue_maxlen dynamically if drops occur.
+#   - Estimates BDP and tunes buffers accordingly.
+#   - Dynamically adjusts initial congestion window (initcwnd_segments) based on link stability.
+#   - Toggles TSO when persistent intr_queue_drops are observed.
+#   - Applies changes immediately via sysctl and persists them in /etc/sysctl.conf.
+#   - Provides flexible logging: terminal only, terminal + date, or file logging.
+#
+# Requirements:
+#   - FreeBSD system with root privileges.
+#   - sysctl, ping, netstat utilities available.
+#
+# ===========================================================================================
+
+# Permission verification
+if [ "$(id -u)" -ne 0 ]; then
+  cat <<EOF
+
+ERROR: This script must be run as root.
+Usage: sudo ${0##*/} [-d] [-l]
+
+  -d  Add date and time to the event log.
+  -l  Log events to the file /var/log/${0##*/}.log
+
+EOF
+  exit 1
+fi
+
+# Clear the screen only if the output is an interactive terminal
+if [ -t 1 ]; then
+  tput clear
+fi
+
+# ===== Arguments =====
+LOGFILE=""
+DATE_IN_LOG=0
+
+while getopts "ld" opt; do
+  case "$opt" in
+    l) LOGFILE="/var/log/${0##*/}.log" ;;
+    d) DATE_IN_LOG=1 ;;
+  esac
+done
+
+# ===== Configuration =====
+TARGET_HOST="${TARGET_HOST:-8.8.8.8}"    # Stable host
+IFACE="${IFACE:-wlan0}"                  # Network interface
+PING_COUNT="${PING_COUNT:-10}"           # Pings per round
+INTERVAL_SEC="${INTERVAL_SEC:-60}"       # Interval (seconds)
+
+# Latency and packet loss thresholds
+RTT_VSLOW=250; RTT_SLOW=150; RTT_FAST=80; RTT_VFAST=30
+LOSS_HIGH=5; LOSS_MED=2
+
+# Throughput thresholds (bps)
+THRU_SLOW=2000000; THRU_MED=20000000; THRU_FAST=200000000; THRU_VFAST=1000000000
+
+# Buffers
+BUF_SMALL=65536; BUF_MED=131072; BUF_LARGE=262144; BUF_XL=524288
+SOCKBUF_MAX_MED=2097152; SOCKBUF_MAX_XL=8388608
+ENABLE_AUTO_BUF=1
+
+# ===== Utilities =====
+log(){
+  if [ -n "$LOGFILE" ]; then
+    if [ "$DATE_IN_LOG" -eq 1 ]; then
+      echo "$(date '+%F %T') $*" >> "$LOGFILE"
+      echo "$*"                # Terminal with date
+    else
+      echo "$*" >> "$LOGFILE"
+      echo "$*"                # Terminal without date
+    fi
+  else
+    echo "$*"                  # Terminal only, without date
+  fi
+}
+
+set_sysctl_if_needed() {
+  key="$1"; val="$2"
+  cur="$(sysctl -n "$key" 2>/dev/null)"
+  [ "$cur" = "$val" ] && return 0
+
+  # Apply immediate change
+  sysctl "$key=$val" >/dev/null 2>&1
+
+  # Persistence in /etc/sysctl.conf (robust pattern with spaces)
+  if grep -Eq "^[[:space:]]*${key}[[:space:]]*=" /etc/sysctl.conf 2>/dev/null; then
+    sed -i '' -E "s|^[[:space:]]*${key}[[:space:]]*=.*|${key}=${val}|" /etc/sysctl.conf
+  else
+    echo "${key}=${val}" >> /etc/sysctl.conf
+    log "Added persistent $key=$val to /etc/sysctl.conf"
+  fi
+}
+
+measure_ping() {
+  out="$(ping -c "$PING_COUNT" -n "$TARGET_HOST" 2>/dev/null)"
+  loss_line=$(echo "$out" | grep "packet loss")
+  stats_line=$(echo "$out" | grep "round-trip")
+  loss_pct=$(echo "$loss_line" | sed -E 's/.* ([0-9]+)\..*% packet loss.*/\1/')
+  avg_ms=$(echo "$stats_line" | awk -F'/' '{printf "%.0f", $5}')
+  [ -z "$loss_pct" ] && loss_pct=100
+  [ -z "$avg_ms" ] && avg_ms=999
+  echo "$avg_ms $loss_pct"
+}
+
+measure_jitter() {
+  out="$(ping -c "$PING_COUNT" -n "$TARGET_HOST" 2>/dev/null)"
+  stats_line=$(echo "$out" | grep "round-trip")
+  min=$(echo "$stats_line" | awk -F'/' '{printf "%.0f", $4}')
+  max=$(echo "$stats_line" | awk -F'/' '{printf "%.0f", $6}')
+  jitter=$((max - min))
+  [ -z "$jitter" ] && jitter=0
+  echo "$jitter"
+}
+
+measure_intr_drops() {
+  drops="$(sysctl -n net.inet.ip.intr_queue_drops 2>/dev/null)"
+  [ -z "$drops" ] && drops=0
+  echo "$drops"
+}
+
+measure_out_of_order() {
+  val="$(netstat -s | grep 'out-of-order' | awk '{print $1}')"
+  [ -z "$val" ] && val=0
+  echo "$val"
+}
+
+iface_bytes() {
+  line="$(netstat -I "$IFACE" -b -n | awk 'NR==2{print $8" "$11}')"
+  [ -z "$line" ] && line="0 0"
+  echo "$line"
+}
+
+classify_tier() {
+  avg_ms="$1"; loss_pct="$2"; thru_bps="$3"
+  if [ "$loss_pct" -ge "$LOSS_HIGH" ] || [ "$avg_ms" -ge "$RTT_VSLOW" ]; then echo "very_slow"; return; fi
+  if [ "$thru_bps" -lt "$THRU_SLOW" ] || [ "$avg_ms" -ge "$RTT_SLOW" ] || [ "$loss_pct" -ge "$LOSS_MED" ]; then echo "slow"; return; fi
+  if [ "$thru_bps" -lt "$THRU_MED" ] || [ "$avg_ms" -ge "$RTT_FAST" ]; then echo "medium"; return; fi
+  if [ "$thru_bps" -lt "$THRU_FAST" ] || [ "$avg_ms" -ge "$RTT_VFAST" ]; then echo "fast"; return; fi
+  echo "very_fast"
+}
+
+pick_cc_algorithm() {
+  tier="$1"
+  avail_cc="$(sysctl -n net.inet.tcp.cc.available)"
+  case "$tier" in
+    very_slow) for alg in vegas chd htcp cubic; do echo "$avail_cc" | grep -qw "$alg" && echo "$alg" && return; done ;;
+    slow)      for alg in vegas chd htcp cubic; do echo "$avail_cc" | grep -qw "$alg" && echo "$alg" && return; done ;;
+    medium)    for alg in htcp cubic; do echo "$avail_cc" | grep -qw "$alg" && echo "$alg" && return; done ;;
+    fast)      for alg in htcp dctcp cubic; do echo "$avail_cc" | grep -qw "$alg" && echo "$alg" && return; done ;;
+    very_fast) for alg in dctcp cdg cubic; do echo "$avail_cc" | grep -qw "$alg" && echo "$alg" && return; done ;;
+  esac
+  echo "cubic"
+}
+
+pick_stack() {
+  tier="$1"; loss_pct="$2"
+  avail_funcs="$(sysctl -n net.inet.tcp.functions_available)"
+  if [ "$tier" = "very_fast" ] && echo "$avail_funcs" | grep -qw bbr; then echo "bbr"; return; fi
+  if [ "$loss_pct" -ge "$LOSS_MED" ] && echo "$avail_funcs" | grep -qw rack; then echo "rack"; return; fi
+  echo "freebsd"
+}
+
+pick_buffers_and_ecn() {
+  tier="$1"
+  case "$tier" in
+    very_slow|slow) echo "$BUF_LARGE $BUF_LARGE 0 $SOCKBUF_MAX_MED 100 262144 262144 0 0 40 0" ;;
+    medium)         echo "$BUF_MED $BUF_MED 1 $SOCKBUF_MAX_MED 300 524288 524288 1 1 80 1" ;;
+    fast)           echo "$BUF_LARGE $BUF_LARGE 1 $SOCKBUF_MAX_XL 600 8388608 8388608 1 1 100 1" ;;
+    very_fast)      echo "$BUF_XL $BUF_XL 1 $SOCKBUF_MAX_XL 1000 16777216 16777216 1 1 200 1" ;;
+  esac
+}
+
+init_baseline() {
+  [ "$ENABLE_AUTO_BUF" = "1" ] && {
+    set_sysctl_if_needed net.inet.tcp.recvbuf_auto 1
+    set_sysctl_if_needed net.inet.tcp.sendbuf_auto 1
+  }
+  set_sysctl_if_needed net.inet.tcp.path_mtu_discovery 1
+}
+
+# ===== BDP estimation and dynamic buffer tuning =====
+estimate_bdp_bytes() {
+  thr_bps="$1"; rtt_ms="$2"
+  rtt_s=$(awk "BEGIN {printf \"%.6f\", $rtt_ms/1000}")
+  bdp_bytes=$(awk "BEGIN {printf \"%.0f\", ($thr_bps * $rtt_s)/8}")
+  echo "$bdp_bytes"
+}
+
+adjust_buffers_by_bdp() {
+  bdp="$1"
+  if [ "$bdp" -lt 262144 ]; then
+    new_recvspace=131072; new_sendspace=131072; new_recvmax=2097152; new_sendmax=2097152
+  elif [ "$bdp" -lt 1048576 ]; then
+    new_recvspace=262144; new_sendspace=262144; new_recvmax=4194304; new_sendmax=4194304
+  else
+    new_recvspace=524288; new_sendspace=524288; new_recvmax=8388608; new_sendmax=8388608
+  fi
+  set_sysctl_if_needed net.inet.tcp.recvbuf_max "$new_recvmax"
+  set_sysctl_if_needed net.inet.tcp.sendbuf_max "$new_sendmax"
+  set_sysctl_if_needed net.inet.tcp.recvspace "$new_recvspace"
+  set_sysctl_if_needed net.inet.tcp.sendspace "$new_sendspace"
+}
+
+# ===== Dynamic IW tuning =====
+adjust_iw_by_profile() {
+  rtt_ms="$1"; loss_pct="$2"; jitter_ms="$3"; thr_bps="$4"
+  new_iw=10
+  if [ "$rtt_ms" -lt 50 ] && [ "$loss_pct" -lt 1 ] && [ "$jitter_ms" -lt 20 ] && [ "$thr_bps" -lt 20000000 ]; then
+    new_iw=20
+  fi
+  if [ "$rtt_ms" -lt 10 ] && [ "$jitter_ms" -lt 5 ] && [ "$loss_pct" -eq 0 ]; then
+    new_iw=40
+  fi
+  if [ "$loss_pct" -ge 2 ] || [ "$jitter_ms" -ge 50 ]; then
+    new_iw=10
+  fi
+  set_sysctl_if_needed net.inet.tcp.initcwnd_segments "$new_iw"
+}
+
+# ===== Dynamic TSO control =====
+toggle_tso_if_needed() {
+  drops="$1"
+  cur_tso="$(sysctl -n net.inet.tcp.tso 2>/dev/null)"
+  [ -z "$cur_tso" ] && cur_tso=1
+  if [ "$drops" -gt 0 ] && [ "$cur_tso" -eq 1 ]; then
+    set_sysctl_if_needed net.inet.tcp.tso 0
+  elif [ "$drops" -eq 0 ] && [ "$cur_tso" -eq 0 ]; then
+    set_sysctl_if_needed net.inet.tcp.tso 1
+  fi
+}
+
+# ===== Out-of-order measurement =====
+measure_out_of_order() {
+  val="$(netstat -s | grep 'out-of-order' | awk '{print $1}')"
+  [ -z "$val" ] && val=0
+  echo "$val"
+}
+
+# ===== ABC and Reassembly tuning =====
+adjust_abc_and_reass() {
+  jitter_ms="$1"; loss_pct="$2"; out_of_order="$3"
+
+  # ABC (Appropriate Byte Counting) tuning
+  if [ "$loss_pct" -lt 1 ] && [ "$jitter_ms" -lt 20 ]; then
+    set_sysctl_if_needed net.inet.tcp.abc_l_var 4
+  else
+    set_sysctl_if_needed net.inet.tcp.abc_l_var 1
+  fi
+
+  # Reassembly queue tuning
+  if [ "$out_of_order" -gt 100 ]; then
+    set_sysctl_if_needed net.inet.tcp.reass.maxqueuelen 256
+  else
+    set_sysctl_if_needed net.inet.tcp.reass.maxqueuelen 64
+  fi
+}
+
+# ===== Main =====
+log "Starting network autotuner (host=$TARGET_HOST, iface=$IFACE, interval=${INTERVAL_SEC}s)"
+init_baseline
+
+read rx0 tx0 <<EOF
+$(iface_bytes)
+EOF
+
+while :; do
+  start_ts=$(date +%s)
+  read avg_ms loss_pct <<EOF
+$(measure_ping)
+EOF
+  jitter="$(measure_jitter)"
+  intr_drops="$(measure_intr_drops)"
+  out_of_order="$(measure_out_of_order)"
+  sleep "$INTERVAL_SEC"
+  read rx1 tx1 <<EOF
+$(iface_bytes)
+EOF
+  end_ts=$(date +%s); dt=$((end_ts - start_ts)); [ "$dt" -le 0 ] && dt=1
+  d_rx=$((rx1 - rx0)); d_tx=$((tx1 - tx0)); [ "$d_rx" -lt 0 ] && d_rx=0; [ "$d_tx" -lt 0 ] && d_tx=0
+  sum_bytes=$((d_rx + d_tx)); thru_bps=$(( (sum_bytes * 8) / dt ))
+  rx0="$rx1"; tx0="$tx1"
+
+  tier="$(classify_tier "$avg_ms" "$loss_pct" "$thru_bps")"
+  cc_alg="$(pick_cc_algorithm "$tier")"
+  stack="$(pick_stack "$tier" "$loss_pct")"
+  read recvspace sendspace ecn sockmax intrq recvbuf_max sendbuf_max keepalive delayed_ack delacktime sack_enable <<EOF
+$(pick_buffers_and_ecn "$tier")
+EOF
+
+  set_sysctl_if_needed net.inet.tcp.functions_default "$stack"
+  set_sysctl_if_needed net.inet.tcp.cc.algorithm "$cc_alg"
+  set_sysctl_if_needed net.inet.tcp.recvspace "$recvspace"
+  set_sysctl_if_needed net.inet.tcp.sendspace "$sendspace"
+  set_sysctl_if_needed net.inet.tcp.recvbuf_max "$recvbuf_max"
+  set_sysctl_if_needed net.inet.tcp.sendbuf_max "$sendbuf_max"
+  set_sysctl_if_needed net.inet.tcp.ecn.enable "$ecn"
+  set_sysctl_if_needed kern.ipc.maxsockbuf "$sockmax"
+  set_sysctl_if_needed net.inet.ip.intr_queue_maxlen "$intrq"
+  set_sysctl_if_needed net.inet.tcp.always_keepalive "$keepalive"
+  set_sysctl_if_needed net.inet.tcp.delayed_ack "$delayed_ack"
+  set_sysctl_if_needed net.inet.tcp.delacktime "$delacktime"
+  set_sysctl_if_needed net.inet.tcp.sack.enable "$sack_enable"
+
+  # Jitter-based ACK adjustment
+  if [ "$jitter" -gt 50 ]; then
+    set_sysctl_if_needed net.inet.tcp.delayed_ack 0
+  else
+    set_sysctl_if_needed net.inet.tcp.delayed_ack 1
+  fi
+
+  # Drop-based intr_queue_maxlen adjustment
+  if [ "$intr_drops" -gt 0 ]; then
+    new_intrq=$((intrq + intrq/2))
+    [ "$new_intrq" -gt 2000 ] && new_intrq=2000
+    set_sysctl_if_needed net.inet.ip.intr_queue_maxlen "$new_intrq"
+  fi
+
+  # BDP-driven buffer tuning
+  bdp_bytes="$(estimate_bdp_bytes "$thru_bps" "$avg_ms")"
+  adjust_buffers_by_bdp "$bdp_bytes"
+
+  # Dynamic initial window (IW)
+  adjust_iw_by_profile "$avg_ms" "$loss_pct" "$jitter" "$thru_bps"
+
+  # TSO toggle based on kernel drops
+  toggle_tso_if_needed "$intr_drops"
+
+  # ABC and Reassembly tuning
+  adjust_abc_and_reass "$avg_ms" "$loss_pct" "$out_of_order"
+
+  # Extended log
+  log "BDP=${bdp_bytes}B RTT=${avg_ms}ms loss=${loss_pct}% jitter=${jitter}ms thr=${thru_bps}bps drops=${intr_drops} out_of_order=${out_of_order} => tier=${tier}, stack=${stack}, cc=${cc_alg}, recv=${recvspace}, send=${sendspace}, ecn=${ecn}, sockmax=${sockmax}, intrq=${intrq}, recvbuf_max=${recvbuf_max}, sendbuf_max=${sendbuf_max}, keepalive=${keepalive}, delayed_ack=${delayed_ack}, delacktime=${delacktime}, sack_enable=${sack_enable}, intr_queue_maxlen=${intrq}"
+done
