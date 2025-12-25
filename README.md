@@ -1,16 +1,15 @@
-```markdown
 # FreeBSD Network Autotuner
 
 **Author:** Geovanni B.R. (geobarrod)
 **Date:** 2025-12-25  
 
-## Purpose:
+## Purpose
 This script dynamically adjusts the TCP stack, congestion control algorithm, buffers, and queues based on real-time network metrics such as latency, packet loss, jitter, throughput, kernel drops, and out-of-order segments.  
 It is designed to optimize FreeBSD networking performance in diverse and changing conditions.
 
 ---
 
-## Usage:
+## Usage
 ```sh
 sudo fbsd-net-autotuner [-d] [-l]
 ```
@@ -21,7 +20,7 @@ sudo fbsd-net-autotuner [-d] [-l]
 
 ---
 
-## Configuration Variables:
+## Configuration Variables
 You can override these defaults by exporting environment variables before running the script:
 
 | Variable       | Default   | Description                          |
@@ -33,7 +32,7 @@ You can override these defaults by exporting environment variables before runnin
 
 ---
 
-## Features:
+## Features
 - Classifies network conditions into tiers: **very_slow, slow, medium, fast, very_fast**.
 - Dynamically selects TCP congestion control algorithm and stack:
   - Algorithms: `cubic`, `chd`, `htcp`, `dctcp`, `cdg`, `vegas`
@@ -63,7 +62,7 @@ You can override these defaults by exporting environment variables before runnin
 
 ---
 
-## Network Tier Classification:
+## Network Tier Classification
 The script evaluates **RTT (latency)**, **packet loss**, **throughput**, and also **jitter/out-of-order** to classify the connection:
 
 | Tier        | Conditions (examples)                                   | Behavior                        |
@@ -76,13 +75,13 @@ The script evaluates **RTT (latency)**, **packet loss**, **throughput**, and als
 
 ---
 
-## Requirements:
+## Requirements
 - FreeBSD system with root privileges.
 - Utilities: `sysctl`, `ping`, `netstat`.
 
 ---
 
-## Notes:
+## Notes
 - The script runs in an infinite loop. Stop it with `Ctrl+C`.  
 - Ensure `/etc/sysctl.conf` is writable for persistence.  
 - `delayed_ack` tier setting may be overridden by jitter detection.  
@@ -90,7 +89,7 @@ The script evaluates **RTT (latency)**, **packet loss**, **throughput**, and als
 
 ---
 
-## Example:
+## Example
 Run with logging to file and timestamps:
 ```sh
 sudo fbsd-net-autotuner -d -l
@@ -116,7 +115,7 @@ sudo make uninstall
 
 ---
 
-## License: BSD 3-Clause
+## License BSD 3-Clause
 This script is provided as-is for sysadmin use. Modify and adapt freely for your infrastructure.
 ```
 
