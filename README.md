@@ -93,12 +93,11 @@ The script evaluates **RTT (latency)**, **packet loss**, **throughput**, and als
 Run with logging to file and timestamps:
 ```sh
 sudo fbsd-net-autotuner -d -l
-```
+
 ---
 
 ## Installation
 Clone the repository and run the installer:
-
 ```sh
 git clone https://github.com/usuario/fbsd-net-autotuner.git
 cd fbsd-net-autotuner
@@ -108,7 +107,6 @@ sudo make install
 
 ## Uninstallation
 To remove the fbsd-net-autotuner and service:
-
 ```sh
 cd fbsd-net-autotuner
 sudo make uninstall
