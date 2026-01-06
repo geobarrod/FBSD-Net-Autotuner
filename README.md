@@ -98,7 +98,7 @@ sudo fbsd-net-autotuner -d -l
 Clone the repository and run the installer:
 ```sh
 git clone https://github.com/geobarrod/FBSD-Net-Autotuner.git
-cd fbsd-net-autotuner
+cd FBSD-Net-Autotuner
 sudo make install
 ```
 
@@ -107,7 +107,7 @@ sudo make install
 ## Uninstallation
 To remove the fbsd-net-autotuner and service:
 ```sh
-cd fbsd-net-autotuner
+cd FBSD-Net-Autotuner
 sudo make uninstall
 ```
 
