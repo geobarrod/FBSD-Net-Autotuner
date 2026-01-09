@@ -37,4 +37,4 @@ chmod 755 "$RC_DIR/$SERVICE_NAME"
 
 echo "Installation complete."
 echo "You can now for testing run: $BIN_DIR/$SCRIPT_NAME"
-echo "And manage the service via: service $SERVICE_NAME start|stop|restart"
+echo "And manage the service via: service $SERVICE_NAME enable|start|restart|stop|disable"
