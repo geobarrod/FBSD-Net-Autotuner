@@ -6,7 +6,7 @@
 # Purpose:
 #   Dynamically adjusts TCP stack, congestion control algorithm, buffers,
 #   and queues based on real-time network metrics (latency, packet loss, jitter,
-#   throughput, queue drops, and NIC speed).
+#   throughput, queue drops, out-of-order segments, FIN-WAIT-1/FIN-WAIT-2 sockets, and NIC speed).
 #
 # Usage:
 #   sudo fbsd-net-autotuner [-d] [-l]
@@ -37,6 +37,7 @@
 #   - Dynamically adjusts initial congestion window (initcwnd_segments) based on link stability.
 #   - Toggles TSO when persistent intr_queue_drops are observed.
 #   - Tunes Appropriate Byte Counting (ABC) and TCP reassembly queue length based on conditions.
+#   - Dynamically manages FIN-WAIT-2 sockets.
 #   - Tunes mbuf clusters and jumbo buffers based on NIC speed (1G, 10G, 40G).
 #   - Tunes UDP receive buffer size based on NIC speed.
 #   - Applies changes immediately via sysctl and persists them in /etc/sysctl.conf.
@@ -352,6 +353,39 @@ adjust_abc_and_reass() {
   fi
 }
 
+# --- FIN-WAIT-1 monitoring ---
+measure_finwait1() {
+    val="$(netstat -an | grep FIN_WAIT_1 | wc -l | xargs)"
+    [ -z "$val" ] && val=0
+    echo "$val"
+}
+
+# --- Dynamic FIN-WAIT-2 cleanup tuning ---
+adjust_fast_finwait2() {
+    total_established=$(netstat -an | grep ESTABLISHED | wc -l | xargs)
+    finwait2_conns=$(netstat -an | grep FIN_WAIT_2 | wc -l | xargs)
+
+    if [ "$total_established" -gt 0 ]; then
+        percent=$(( finwait2_conns * 100 / total_established ))
+    else
+        percent=0
+    fi
+
+    desired=0
+    [ "$percent" -gt 5 ] && desired=1
+
+    current=$(sysctl -n net.inet.tcp.fast_finwait2_recycle 2>/dev/null)
+
+    if [ "$current" != "$desired" ]; then
+        set_sysctl_if_needed net.inet.tcp.fast_finwait2_recycle "$desired"
+        if [ "$desired" -eq 1 ]; then
+            log_event "Enabled fast FIN-WAIT-2 recycle (FIN-WAIT-2=$finwait2_conns, ESTABLISHED=$total_established, $percent%)"
+        else
+            log_event "Restored default FIN-WAIT-2 recycle behavior (FIN-WAIT-2=$finwait2_conns, ESTABLISHED=$total_established, $percent%)"
+        fi
+    fi
+}
+
 # --- Multithreaded ISR tuning ---
 tune_isr() {
     local ncpu
@@ -564,6 +598,14 @@ EOF
   # ABC and Reassembly tuning
   adjust_abc_and_reass "$avg_ms" "$loss_pct" "$out_of_order"
 
+  # Dynamic FIN-WAIT-2 cleanup
+  adjust_fast_finwait2
+
   # Extended log
-  log "BDP=${bdp_bytes}B RTT=${avg_ms}ms loss=${loss_pct}% jitter=${jitter}ms thr=${thru_bps}bps drops=${intr_drops} out_of_order=${out_of_order} => tier=${tier}, stack=${stack}, cc=${cc_alg}, recv=${recvspace}, send=${sendspace}, ecn=${ecn}, sockmax=${sockmax}, intrq=${intrq}, recvbuf_max=${recvbuf_max}, sendbuf_max=${sendbuf_max}, keepalive=${keepalive}, delayed_ack=${delayed_ack}, delacktime=${delacktime}, sack_enable=${sack_enable}, intr_queue_maxlen=${intrq}"
+  log "BDP=${bdp_bytes}B RTT=${avg_ms}ms loss=${loss_pct}% jitter=${jitter}ms thr=${thru_bps}bps
+ drops=${intr_drops} out_of_order=${out_of_order} => tier=${tier}, stack=${stack}, cc=${cc_alg}, recv=${recvspace},
+ send=${sendspace}, ecn=${ecn}, sockmax=${sockmax}, intrq=${intrq}, recvbuf_max=${recvbuf_max}, sendbuf_max=${sendbuf_max},
+ keepalive=${keepalive}, delayed_ack=${delayed_ack}, delacktime=${delacktime}, sack_enable=${sack_enable},
+ intr_queue_maxlen=${intrq}, finwait1_conns=$(measure_finwait1), finwait2_conns=${finwait2_conns}, est_conns=${total_established}
+"
 done
