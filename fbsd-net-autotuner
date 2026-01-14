@@ -244,24 +244,74 @@ classify_tier() {
   echo "very_fast"
 }
 
-pick_cc_algorithm() {
-  tier="$1"
+pick_cc_algorithm_adaptive() {
+  avg_ms="$1"       # RTT in ms
+  loss_pct="$2"     # packet loss %
+  jitter="$3"    # jitter in ms
+  thru_bps="$4"     # throughput in bps
   avail_cc="$(sysctl -n net.inet.tcp.cc.available)"
-  case "$tier" in
-    very_slow) for alg in vegas chd htcp cubic; do echo "$avail_cc" | grep -qw "$alg" && echo "$alg" && return; done ;;
-    slow)      for alg in vegas chd htcp cubic; do echo "$avail_cc" | grep -qw "$alg" && echo "$alg" && return; done ;;
-    medium)    for alg in htcp cubic; do echo "$avail_cc" | grep -qw "$alg" && echo "$alg" && return; done ;;
-    fast)      for alg in htcp dctcp cubic; do echo "$avail_cc" | grep -qw "$alg" && echo "$alg" && return; done ;;
-    very_fast) for alg in dctcp cdg cubic; do echo "$avail_cc" | grep -qw "$alg" && echo "$alg" && return; done ;;
-  esac
+
+  # 1. Low latency and zero loss → Vegas
+  if [ "$avg_ms" -lt 50 ] && [ "$loss_pct" -eq 0 ] && echo "$avail_cc" | grep -qw vegas; then
+    echo "vegas"; return
+  fi
+
+  # 2. High capacity and long RTT → HTCP
+  if [ "$avg_ms" -ge 100 ] && [ "$thru_bps" -gt 20000000 ] && echo "$avail_cc" | grep -qw htcp; then
+    echo "htcp"; return
+  fi
+
+  # 3. ECN enabled and low loss → DCTCP
+  ecn_enabled="$(sysctl -n net.inet.tcp.ecn.enable 2>/dev/null)"
+  if [ "$ecn_enabled" -eq 1 ] && [ "$loss_pct" -lt 1 ] && echo "$avail_cc" | grep -qw dctcp; then
+    echo "dctcp"; return
+  fi
+
+  # 4. High jitter → CDG
+  if [ "$jitter" -gt 30 ] && echo "$avail_cc" | grep -qw cdg; then
+    echo "cdg"; return
+  fi
+
+  # 5. Moderate loss → CHD/HD
+  if [ "$loss_pct" -ge 2 ] && echo "$avail_cc" | grep -qw chd; then
+    echo "chd"; return
+  fi
+  if [ "$loss_pct" -ge 2 ] && echo "$avail_cc" | grep -qw hd; then
+    echo "hd"; return
+  fi
+
+  # 6. Fallback → Cubic
+  if echo "$avail_cc" | grep -qw cubic; then
+    echo "cubic"; return
+  fi
+
+  # Default fallback
   echo "cubic"
 }
 
-pick_stack() {
-  tier="$1"; loss_pct="$2"
-  avail_funcs="$(sysctl -n net.inet.tcp.functions_available)"
-  if [ "$tier" = "very_fast" ] && echo "$avail_funcs" | grep -qw bbr; then echo "bbr"; return; fi
-  if [ "$loss_pct" -ge "$LOSS_MED" ] && echo "$avail_funcs" | grep -qw rack; then echo "rack"; return; fi
+pick_stack_adaptive() {
+  avg_ms="$1"       # RTT in ms
+  loss_pct="$2"     # packet loss %
+  jitter="$3"    # jitter in ms
+  thru_bps="$4"     # throughput in bps
+  avail_stacks="$(sysctl -n net.inet.tcp.functions_available)"
+
+  # High capacity and low RTT → BBR
+  if [ "$thru_bps" -gt 200000000 ] && [ "$avg_ms" -lt 30 ] && echo "$avail_stacks" | grep -qw bbr; then
+    echo "bbr"; return
+  fi
+
+  # High loss or reordering → RACK
+  if [ "$loss_pct" -ge 2 ] && echo "$avail_stacks" | grep -qw rack; then
+    echo "rack"; return
+  fi
+
+  # High jitter → RACK can also be better
+  if [ "$jitter" -gt 20 ] && echo "$avail_stacks" | grep -qw rack; then
+    echo "rack"; return
+  fi
+
+  # Fallback → FreeBSD
   echo "freebsd"
 }
 
@@ -308,15 +358,15 @@ adjust_buffers_by_bdp() {
 
 # ===== Dynamic IW tuning =====
 adjust_iw_by_profile() {
-  rtt_ms="$1"; loss_pct="$2"; jitter_ms="$3"; thr_bps="$4"
+  rtt_ms="$1"; loss_pct="$2"; jitter="$3"; thr_bps="$4"
   new_iw=10
-  if [ "$rtt_ms" -lt 50 ] && [ "$loss_pct" -lt 1 ] && [ "$jitter_ms" -lt 20 ] && [ "$thr_bps" -lt 20000000 ]; then
+  if [ "$rtt_ms" -lt 50 ] && [ "$loss_pct" -lt 1 ] && [ "$jitter" -lt 20 ] && [ "$thr_bps" -lt 20000000 ]; then
     new_iw=20
   fi
-  if [ "$rtt_ms" -lt 10 ] && [ "$jitter_ms" -lt 5 ] && [ "$loss_pct" -eq 0 ]; then
+  if [ "$rtt_ms" -lt 10 ] && [ "$jitter" -lt 5 ] && [ "$loss_pct" -eq 0 ]; then
     new_iw=40
   fi
-  if [ "$loss_pct" -ge 2 ] || [ "$jitter_ms" -ge 50 ]; then
+  if [ "$loss_pct" -ge 2 ] || [ "$jitter" -ge 50 ]; then
     new_iw=10
   fi
   set_sysctl_if_needed net.inet.tcp.initcwnd_segments "$new_iw"
@@ -336,10 +386,10 @@ toggle_tso_if_needed() {
 
 # ===== ABC and Reassembly tuning =====
 adjust_abc_and_reass() {
-  jitter_ms="$1"; loss_pct="$2"; out_of_order="$3"
+  jitter="$1"; loss_pct="$2"; out_of_order="$3"
 
   # ABC (Appropriate Byte Counting) tuning
-  if [ "$loss_pct" -lt 1 ] && [ "$jitter_ms" -lt 20 ]; then
+  if [ "$loss_pct" -lt 1 ] && [ "$jitter" -lt 20 ]; then
     set_sysctl_if_needed net.inet.tcp.abc_l_var 4
   else
     set_sysctl_if_needed net.inet.tcp.abc_l_var 1
@@ -551,13 +601,13 @@ EOF
   rx0="$rx1"; tx0="$tx1"
 
   tier="$(classify_tier "$avg_ms" "$loss_pct" "$thru_bps")"
-  cc_alg="$(pick_cc_algorithm "$tier")"
-  stack="$(pick_stack "$tier" "$loss_pct")"
+  cc_alg="$(pick_cc_algorithm_adaptive "$avg_ms" "$loss_pct" "$jitter" "$thru_bps")"
+  stack_alg="$(pick_stack_adaptive "$avg_ms" "$loss_pct" "$jitter" "$thru_bps")"
   read recvspace sendspace ecn sockmax intrq recvbuf_max sendbuf_max keepalive delayed_ack delacktime sack_enable <<EOF
 $(pick_buffers_and_ecn "$tier")
 EOF
 
-  set_sysctl_if_needed net.inet.tcp.functions_default "$stack"
+  set_sysctl_if_needed net.inet.tcp.functions_default "$stack_alg"
   set_sysctl_if_needed net.inet.tcp.cc.algorithm "$cc_alg"
   set_sysctl_if_needed net.inet.tcp.recvspace "$recvspace"
   set_sysctl_if_needed net.inet.tcp.sendspace "$sendspace"
@@ -603,7 +653,7 @@ EOF
 
   # Extended log
   log "BDP=${bdp_bytes}B RTT=${avg_ms}ms loss=${loss_pct}% jitter=${jitter}ms thr=${thru_bps}bps
- drops=${intr_drops} out_of_order=${out_of_order} => tier=${tier}, stack=${stack}, cc=${cc_alg}, recv=${recvspace},
+ drops=${intr_drops} out_of_order=${out_of_order} => tier=${tier}, stack=${stack_alg}, cc=${cc_alg}, recv=${recvspace},
  send=${sendspace}, ecn=${ecn}, sockmax=${sockmax}, intrq=${intrq}, recvbuf_max=${recvbuf_max}, sendbuf_max=${sendbuf_max},
  keepalive=${keepalive}, delayed_ack=${delayed_ack}, delacktime=${delacktime}, sack_enable=${sack_enable},
  intr_queue_maxlen=${intrq}, finwait1_conns=$(measure_finwait1), finwait2_conns=${finwait2_conns}, est_conns=${total_established}

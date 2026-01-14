@@ -92,17 +92,17 @@ The script evaluates **RTT (latency)**, **packet loss**, **throughput**, and als
 ## Monitored Metrics
 The net-autotuner continuously measures and logs the following metrics to guide dynamic tuning decisions:
 
-| Metric            | Source/Method                                       | Purpose / Usage                                                                 |
-|-------------------|-----------------------------------------------------|---------------------------------------------------------------------------------|
-| RTT (latency)     | `ping` statistics                                   | Classify network tier (very_slow → very_fast).                                  |
-| Packet loss       | `ping` statistics                                   | Detect unstable links, adjust buffers and congestion control.                   |
-| Jitter            | Min/Max RTT difference                              | Override delayed ACK when jitter is high.                                       |
-| Throughput        | `netstat -I <iface>` bytes per second               | Classify tier, estimate Bandwidth-Delay Product (BDP).                          |
-| Intr queue drops  | `sysctl net.inet.ip.intr_queue_drops`               | Increase `intr_queue_maxlen`, toggle TSO if persistent.                         |
-| Out-of-order segs | `netstat -s`                                        | Adjust TCP reassembly queue length (`reass.maxqueuelen`).                       |
-| FIN-WAIT-1 conns  | `netstat -an \| grep FIN_WAIT_1`                    | Logged for diagnostic visibility (no dynamic tuning applied).                   |
-| FIN-WAIT-2 conns  | `netstat -an \| grep FIN_WAIT_2`                    | Dynamically tuned via `net.inet.tcp.fast_finwait2_recycle` (threshold >5%).     |
-| ESTABLISHED conns | `netstat -an \| grep ESTABLISHED`                   | Used as baseline for FIN-WAIT-2 ratio calculation.                              |
+| Metric            | Source/Method                          | Purpose / Usage                                                                 |
+|-------------------|----------------------------------------|---------------------------------------------------------------------------------|
+| RTT (latency)     | `ping` statistics                      | Classify network tier (very_slow → very_fast).                                  |
+| Packet loss       | `ping` statistics                      | Detect unstable links, adjust buffers and congestion control.                   |
+| Jitter            | Min/Max RTT difference                 | Override delayed ACK when jitter is high.                                       |
+| Throughput        | `netstat -I <iface>` bytes per second  | Classify tier, estimate Bandwidth-Delay Product (BDP).                          |
+| Intr queue drops  | `sysctl net.inet.ip.intr_queue_drops`  | Increase `intr_queue_maxlen`, toggle TSO if persistent.                         |
+| Out-of-order segs | `netstat -s`                           | Adjust TCP reassembly queue length (`reass.maxqueuelen`).                       |
+| FIN-WAIT-1 conns  | `netstat -an | grep FIN_WAIT_1`        | Logged for diagnostic visibility (no dynamic tuning applied).                   |
+| FIN-WAIT-2 conns  | `netstat -an | grep FIN_WAIT_2`        | Dynamically tuned via `net.inet.tcp.fast_finwait2_recycle` (threshold >5%).     |
+| ESTABLISHED conns | `netstat -an | grep ESTABLISHED`       | Used as baseline for FIN-WAIT-2 ratio calculation.                              |
 
 ---
 
@@ -178,3 +178,9 @@ sudo make uninstall
   - Restores default when ratio ≤5%.
   - Idempotent logging: changes are logged only when state transitions occur.
 - Extended log output to include `finwait1_conns`, `finwait2_conns`, and `est_conns`.
+
+### v1.7 — 2026-01-14
+- Introduced **adaptive congestion control selection**:
+  - Chooses CC algorithm dynamically (Vegas, HTCP, DCTCP, CDG, CHD/HD, Cubic) based on RTT, loss, jitter, and throughput.
+- Introduced **adaptive TCP stack selection**:
+  - Chooses stack dynamically (BBR, RACK, FreeBSD) based on throughput, RTT, loss, and jitter.
