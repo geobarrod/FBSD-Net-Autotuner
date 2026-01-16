@@ -93,7 +93,7 @@ select_target_host() {
         # Do a quick ping (2 packets)
         out="$(ping -c 2 -n "$h" 2>/dev/null)"
         stats_line=$(echo "$out" | grep "round-trip")
-        avg_ms=$(echo "$stats_line" | awk -F'/' '{printf "%.0f", $5}')
+        avg_ms=$(echo "$stats_line" | awk -F'[=/]' '{printf "%.0f", $6}')
 
         # If no RTT, skip
         [ -z "$avg_ms" ] && continue
@@ -110,7 +110,6 @@ select_target_host() {
 
     echo "$best_host"
 }
-
 
 # ===== Configuration =====
 FRST_IFACE="$(ifconfig -l | awk '{print $1}')"                          # Detect first interface
@@ -201,20 +200,16 @@ measure_ping() {
   loss_line=$(echo "$out" | grep "packet loss")
   stats_line=$(echo "$out" | grep "round-trip")
   loss_pct=$(echo "$loss_line" | sed -E 's/.* ([0-9]+)\..*% packet loss.*/\1/')
-  avg_ms=$(echo "$stats_line" | awk -F'/' '{printf "%.0f", $5}')
+  avg_ms=$(echo "$stats_line" | awk -F'[=/]' '{printf "%.0f", $6}')
+  jitter=$(echo "$stats_line" | awk -F'[=/]' '{printf "%.0f", $8}')
+  min=$(echo "$stats_line" | awk -F'[=/]' '{printf "%.0f", $5}')
+  max=$(echo "$stats_line" | awk -F'[=/]' '{printf "%.0f", $7}')
+  jitter_peak=$((max - min))
   [ -z "$loss_pct" ] && loss_pct=100
   [ -z "$avg_ms" ] && avg_ms=999
-  echo "$avg_ms $loss_pct"
-}
-
-measure_jitter() {
-  out="$(ping -c "$PING_COUNT" -n "$TARGET_HOST" 2>/dev/null)"
-  stats_line=$(echo "$out" | grep "round-trip")
-  min=$(echo "$stats_line" | awk -F'/' '{printf "%.0f", $4}')
-  max=$(echo "$stats_line" | awk -F'/' '{printf "%.0f", $6}')
-  jitter=$((max - min))
   [ -z "$jitter" ] && jitter=0
-  echo "$jitter"
+  [ -z "$jitter_peak" ] && jitter_peak=0
+  echo "$avg_ms $jitter $jitter_peak $loss_pct"
 }
 
 measure_intr_drops() {
@@ -247,7 +242,7 @@ classify_tier() {
 pick_cc_algorithm_adaptive() {
   avg_ms="$1"       # RTT in ms
   loss_pct="$2"     # packet loss %
-  jitter="$3"    # jitter in ms
+  jitter="$3"       # jitter in ms
   thru_bps="$4"     # throughput in bps
   avail_cc="$(sysctl -n net.inet.tcp.cc.available)"
 
@@ -292,7 +287,7 @@ pick_cc_algorithm_adaptive() {
 pick_stack_adaptive() {
   avg_ms="$1"       # RTT in ms
   loss_pct="$2"     # packet loss %
-  jitter="$3"    # jitter in ms
+  jitter="$3"       # jitter in ms
   thru_bps="$4"     # throughput in bps
   avail_stacks="$(sysctl -n net.inet.tcp.functions_available)"
 
@@ -585,10 +580,9 @@ EOF
 
 while :; do
   start_ts=$(date +%s)
-  read avg_ms loss_pct <<EOF
+  read avg_ms jitter jitter_peak loss_pct <<EOF
 $(measure_ping)
 EOF
-  jitter="$(measure_jitter)"
   intr_drops="$(measure_intr_drops)"
   out_of_order="$(measure_out_of_order)"
   sleep "$INTERVAL_SEC"
@@ -646,13 +640,13 @@ EOF
   toggle_tso_if_needed "$intr_drops"
 
   # ABC and Reassembly tuning
-  adjust_abc_and_reass "$avg_ms" "$loss_pct" "$out_of_order"
+  adjust_abc_and_reass "$jitter" "$loss_pct" "$out_of_order"
 
   # Dynamic FIN-WAIT-2 cleanup
   adjust_fast_finwait2
 
   # Extended log
-  log "BDP=${bdp_bytes}B RTT=${avg_ms}ms loss=${loss_pct}% jitter=${jitter}ms thr=${thru_bps}bps
+  log "BDP=${bdp_bytes}B RTT=${avg_ms}ms loss=${loss_pct}% jitter=${jitter}ms jitter_peak=${jitter_peak} thr=${thru_bps}bps
  drops=${intr_drops} out_of_order=${out_of_order} => tier=${tier}, stack=${stack_alg}, cc=${cc_alg}, recv=${recvspace},
  send=${sendspace}, ecn=${ecn}, sockmax=${sockmax}, intrq=${intrq}, recvbuf_max=${recvbuf_max}, sendbuf_max=${sendbuf_max},
  keepalive=${keepalive}, delayed_ack=${delayed_ack}, delacktime=${delacktime}, sack_enable=${sack_enable},

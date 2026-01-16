@@ -180,7 +180,24 @@ sudo make uninstall
 - Extended log output to include `finwait1_conns`, `finwait2_conns`, and `est_conns`.
 
 ### v1.7 — 2026-01-14
-- Introduced **adaptive congestion control selection**:
+- Introduced **adaptive congestion control (CC) selection**:
   - Chooses CC algorithm dynamically (Vegas, HTCP, DCTCP, CDG, CHD/HD, Cubic) based on RTT, loss, jitter, and throughput.
 - Introduced **adaptive TCP stack selection**:
   - Chooses stack dynamically (BBR, RACK, FreeBSD) based on throughput, RTT, loss, and jitter.
+
+### v1.8 — 2026-01-16
+- Unified latency and jitter measurement:
+  - Now extracts avg RTT, stddev jitter, peak jitter (max−min), and packet loss in a single call to ping.
+  - Liminates redundant double ping calls, reducing system load and ensuring consistent metrics from the same sample set.
+- Dual jitter metrics:
+  - Added stddev jitter (statistical variability).
+  - Added peak jitter (max RTT − min RTT) for visibility into extreme spikes.
+  - Both values are logged for richer diagnostics.
+- Extended logging:
+  - Log entries now include jitter and jitter_peak alongside RTT, loss, throughput, and other metrics.
+  - Provides clearer insight into both average variability and worst‑case latency fluctuations.
+- Adaptive tuning logic updated to use stddev jitter as the primary jitter metric for decisions.
+- Code efficiency: reduced duplicate calls to ping, improving performance and accuracy.
+- Corrected parsing of ping output to reliably capture min/avg/max/stddev values.
+- Fixed issue where RTT and jitter previously reported identical values due to incorrect field extraction.
+- Improved resilience against empty or malformed ping output lines.
