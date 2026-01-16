@@ -100,9 +100,9 @@ The net-autotuner continuously measures and logs the following metrics to guide 
 | Throughput        | `netstat -I <iface>` bytes per second  | Classify tier, estimate Bandwidth-Delay Product (BDP).                          |
 | Intr queue drops  | `sysctl net.inet.ip.intr_queue_drops`  | Increase `intr_queue_maxlen`, toggle TSO if persistent.                         |
 | Out-of-order segs | `netstat -s`                           | Adjust TCP reassembly queue length (`reass.maxqueuelen`).                       |
-| FIN-WAIT-1 conns  | `netstat -an | grep FIN_WAIT_1`        | Logged for diagnostic visibility (no dynamic tuning applied).                   |
-| FIN-WAIT-2 conns  | `netstat -an | grep FIN_WAIT_2`        | Dynamically tuned via `net.inet.tcp.fast_finwait2_recycle` (threshold >5%).     |
-| ESTABLISHED conns | `netstat -an | grep ESTABLISHED`       | Used as baseline for FIN-WAIT-2 ratio calculation.                              |
+| FIN-WAIT-1 conns  | `netstat -an \| grep FIN_WAIT_1`        | Logged for diagnostic visibility (no dynamic tuning applied).                   |
+| FIN-WAIT-2 conns  | `netstat -an \| grep FIN_WAIT_2`        | Dynamically tuned via `net.inet.tcp.fast_finwait2_recycle` (threshold >5%).     |
+| ESTABLISHED conns | `netstat -an \| grep ESTABLISHED`       | Used as baseline for FIN-WAIT-2 ratio calculation.                              |
 
 ---
 
