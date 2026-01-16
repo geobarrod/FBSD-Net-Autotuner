@@ -646,7 +646,7 @@ EOF
   adjust_fast_finwait2
 
   # Extended log
-  log "BDP=${bdp_bytes}B RTT=${avg_ms}ms loss=${loss_pct}% jitter=${jitter}ms jitter_peak=${jitter_peak} thr=${thru_bps}bps
+  log "BDP=${bdp_bytes}B RTT=${avg_ms}ms loss=${loss_pct}% jitter=${jitter}ms jitter_peak=${jitter_peak}ms thr=${thru_bps}bps
  drops=${intr_drops} out_of_order=${out_of_order} => tier=${tier}, stack=${stack_alg}, cc=${cc_alg}, recv=${recvspace},
  send=${sendspace}, ecn=${ecn}, sockmax=${sockmax}, intrq=${intrq}, recvbuf_max=${recvbuf_max}, sendbuf_max=${sendbuf_max},
  keepalive=${keepalive}, delayed_ack=${delayed_ack}, delacktime=${delacktime}, sack_enable=${sack_enable},
