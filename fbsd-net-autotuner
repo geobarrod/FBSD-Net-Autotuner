@@ -130,17 +130,17 @@ detect_speed() {
     local iface="$1"
     local speed
 
-    # Extraer velocidad reportada por ifconfig
+    # Extract speed reported by ifconfig
     speed=$(ifconfig "$iface" | awk '/media:/ {print $4}' | sed -e 's/baseT//' -e 's/^.//')
 
-    # Validar que sea numérico
+    # Validate that it is numeric
     if echo "$speed" | grep -Eq '^[0-9]+$'; then
         # Validar rango
         if [ "$speed" -lt 10 ] || [ "$speed" -gt 40000 ]; then
             speed=1000
         fi
     else
-        # No numérico → valor por defecto
+        # If not numeric → default value
         speed=1000
     fi
 
