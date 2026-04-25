@@ -177,10 +177,20 @@ log(){
 # Alias for blocks that use log_event
 log_event() { log "$@"; }
 
+# Check if key exists in loader.conf
+check_loader_conf() {
+        local key="$1"
+        grep -q "^${key}=" /boot/loader.conf 2>/dev/null
+}
+
+# Check if key exists in sysctl.conf
+check_sysctl_conf() {
+        local key="$1"
+        grep -q "^${key}=" /etc/sysctl.conf 2>/dev/null
+}
+
 set_sysctl_if_needed() {
   key="$1"; val="$2"
-  cur="$(sysctl -n "$key" 2>/dev/null)"
-  [ "$cur" = "$val" ] && return 0
 
   # Apply immediate change
   sysctl "$key=$val" >/dev/null 2>&1
@@ -189,6 +199,8 @@ set_sysctl_if_needed() {
   if grep -Eq "^[[:space:]]*${key}[[:space:]]*=" /etc/sysctl.conf 2>/dev/null; then
     sed -i '' -E "s|^[[:space:]]*${key}[[:space:]]*=.*|${key}=${val}|" /etc/sysctl.conf
   else
+    cp /etc/sysctl.conf /etc/sysctl.conf.$(date +%F-%T)
+    log "Backup created: /etc/sysctl.conf.bak.$(date +%F-%T)"
     echo "# Added by fbsd-net-autotuner on $(date '+%F %T')" >> /etc/sysctl.conf
     echo "${key}=${val}" >> /etc/sysctl.conf
     log "Added persistent $key=$val to /etc/sysctl.conf"
@@ -446,21 +458,15 @@ tune_isr() {
     local ncpu
     ncpu=$(sysctl -n hw.ncpu)
 
-    # Helper: check if key exists in loader.conf
-    check_loader_conf() {
-        local key="$1"
-        grep -q "^${key}=" /boot/loader.conf 2>/dev/null
-    }
-
-    # Helper: check if key exists in sysctl.conf
-    check_sysctl_conf() {
-        local key="$1"
-        grep -q "^${key}=" /etc/sysctl.conf 2>/dev/null
-    }
-
     # Apply tunables via loader.conf (require reboot)
     local defaultqlimit=2048
     local maxqlimit=16384
+
+    # Backup before modifying loader.conf
+    if [ -f /boot/loader.conf ]; then
+        cp /boot/loader.conf /boot/loader.conf.$(date +%F-%T)
+        log_event "Backup created: /boot/loader.conf.$(date +%F-%T)"
+    fi
 
     if ! check_loader_conf "net.isr.defaultqlimit"; then
         echo "# Added by fbsd-net-autotuner (requires reboot) on $(date '+%F %T')" >> /boot/loader.conf
@@ -487,7 +493,7 @@ tune_isr() {
     fi
 
     if ! check_sysctl_conf "net.isr.dispatch"; then
-        echo "net.isr.dispatch=direct" >> /etc/sysctl.conf
+        set_sysctl_if_needed net.isr.dispatch direct
         log_event "Applied net.isr.dispatch=direct"
     fi
 }
@@ -498,12 +504,6 @@ tune_mbuf_clusters() {
     local speed
     speed=$(detect_speed "$iface")
  
-    # Helper: check if key exists in sysctl.conf
-    check_sysctl_conf() {
-        local key="$1"
-        grep -q "^${key}=" /etc/sysctl.conf 2>/dev/null
-    }
-
     # Default values (≤1Gbps)
     local nmbclusters=262144
     local nmbjumbop=262144
@@ -529,25 +529,25 @@ tune_mbuf_clusters() {
     # Apply only if not already in sysctl.conf
     if ! check_sysctl_conf "kern.ipc.nmbclusters"; then
         sysctl kern.ipc.nmbclusters="$nmbclusters"
-        echo "kern.ipc.nmbclusters=$nmbclusters" >> /etc/sysctl.conf
+        set_sysctl_if_needed kern.ipc.nmbclusters "$nmbclusters"
         log_event "Applied kern.ipc.nmbclusters=$nmbclusters"
     fi
 
     if ! check_sysctl_conf "kern.ipc.nmbjumbop"; then
         sysctl kern.ipc.nmbjumbop="$nmbjumbop"
-        echo "kern.ipc.nmbjumbop=$nmbjumbop" >> /etc/sysctl.conf
+        set_sysctl_if_needed kern.ipc.nmbjumbop "$nmbjumbop"
         log_event "Applied kern.ipc.nmbjumbop=$nmbjumbop"
     fi
 
     if ! check_sysctl_conf "kern.ipc.nmbjumbo9"; then
         sysctl kern.ipc.nmbjumbo9="$nmbjumbo9"
-        echo "kern.ipc.nmbjumbo9=$nmbjumbo9" >> /etc/sysctl.conf
+        set_sysctl_if_needed kern.ipc.nmbjumbo9 "$nmbjumbo9"
         log_event "Applied kern.ipc.nmbjumbo9=$nmbjumbo9"
     fi
 
     if ! check_sysctl_conf "kern.ipc.nmbjumbo16"; then
         sysctl kern.ipc.nmbjumbo16="$nmbjumbo16"
-        echo "kern.ipc.nmbjumbo16=$nmbjumbo16" >> /etc/sysctl.conf
+        set_sysctl_if_needed kern.ipc.nmbjumbo16 "$nmbjumbo16"
         log_event "Applied kern.ipc.nmbjumbo16=$nmbjumbo16"
     fi
 }
@@ -572,7 +572,7 @@ tune_udp_buffers() {
     # Apply only if not already in sysctl.conf
     if ! check_sysctl_conf "net.inet.udp.recvspace"; then
         sysctl net.inet.udp.recvspace="$udp_recvspace"
-        echo "net.inet.udp.recvspace=$udp_recvspace" >> /etc/sysctl.conf
+        set_sysctl_if_needed net.inet.udp.recvspace "$udp_recvspace"
         log_event "Applied net.inet.udp.recvspace=$udp_recvspace"
     fi
 }
@@ -663,4 +663,3 @@ EOF
  intr_queue_maxlen=${intrq}, finwait1_conns=$(measure_finwait1), finwait2_conns=${finwait2_conns}, est_conns=${total_established}
 "
 done
-
