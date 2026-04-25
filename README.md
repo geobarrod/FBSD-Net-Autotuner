@@ -201,3 +201,7 @@ sudo make uninstall
 - Corrected parsing of ping output to reliably capture min/avg/max/stddev values.
 - Fixed issue where RTT and jitter previously reported identical values due to incorrect field extraction.
 - Improved resilience against empty or malformed ping output lines.
+
+### v1.9 — 2026-01-25
+- Added RACK/TLP tuning parameters for improved performance in high-latency and reordering-prone networks.
+- Added standard TCP stack tuning parameters.
