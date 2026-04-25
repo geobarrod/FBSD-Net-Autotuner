@@ -663,3 +663,4 @@ EOF
  intr_queue_maxlen=${intrq}, finwait1_conns=$(measure_finwait1), finwait2_conns=${finwait2_conns}, est_conns=${total_established}
 "
 done
+
