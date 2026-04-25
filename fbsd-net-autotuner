@@ -298,6 +298,11 @@ pick_stack_adaptive() {
 
   # High loss or reordering → RACK
   if [ "$loss_pct" -ge 2 ] && echo "$avail_stacks" | grep -qw rack; then
+    set_sysctl_if_needed net.inet.tcp.rack.tlp.reorder_thresh 4
+    set_sysctl_if_needed net.inet.tcp.rack.tlp.reorder_fade 30000000
+    set_sysctl_if_needed net.inet.tcp.rack.tlp.pktdelay 3000
+    set_sysctl_if_needed net.inet.tcp.rack.tlp.rtt_tlp_thresh 2
+    set_sysctl_if_needed net.inet.tcp.rack.tlp.limit 3
     echo "rack"; return
   fi
 
@@ -307,7 +312,12 @@ pick_stack_adaptive() {
   fi
 
   # Fallback → FreeBSD
-  echo "freebsd"
+  if echo "$avail_stacks" | grep -qw freebsd; then
+    set_sysctl_if_needed net.inet.tcp.rexmit_min 100
+    set_sysctl_if_needed net.inet.tcp.rexmit_slop 400
+    set_sysctl_if_needed net.inet.tcp.rexmit_initial 2000
+    echo "freebsd"; return
+  fi
 }
 
 pick_buffers_and_ecn() {
