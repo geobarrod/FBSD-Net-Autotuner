@@ -66,6 +66,7 @@ You can override these defaults by exporting environment variables before runnin
   - Terminal only.
   - Terminal + date.
   - File logging.
+- Automatic backup creation for **/etc/sysctl.conf** and **/boot/loader.conf** for safe rollback.
 
 ---
 
@@ -205,3 +206,7 @@ sudo make uninstall
 ### v1.9 — 2026-04-25
 - Added RACK/TLP tuning parameters for improved performance in high-latency and reordering-prone networks.
 - Added standard TCP stack tuning parameters.
+
+### v2.0 — 2026-04-25
+- Automatic backup creation for **/etc/sysctl.conf** and **/boot/loader.conf** for safe rollback.
+- Resolved problem with un‑commented variables in **/etc/sysctl.conf** and **/boot/loader.conf**.
