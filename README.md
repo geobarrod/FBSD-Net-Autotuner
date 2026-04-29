@@ -9,12 +9,13 @@ It is designed to optimize FreeBSD networking performance in diverse and changin
 
 ## Usage
 ```sh
-sudo fbsd-net-autotuner [-d] [-l]
+sudo fbsd-net-autotuner [-d] [-l] [-n]
 ```
 
 ## Options
 - `-d` → Add date and time to the event log.
 - `-l` → Log events to the file `/var/log/fbsd-net-autotuner.log`.
+- `-n` → Simulation mode active (dry-run): no changes applied, only logged.
 
 ---
 
@@ -67,6 +68,7 @@ You can override these defaults by exporting environment variables before runnin
   - Terminal + date.
   - File logging.
 - Automatic backup creation for **/etc/sysctl.conf** and **/boot/loader.conf** for safe rollback.
+- Simulation mode active (dry-run): no changes applied, only logged.
 
 ---
 
@@ -101,9 +103,9 @@ The net-autotuner continuously measures and logs the following metrics to guide 
 | Throughput        | `netstat -I <iface>` bytes per second  | Classify tier, estimate Bandwidth-Delay Product (BDP).                          |
 | Intr queue drops  | `sysctl net.inet.ip.intr_queue_drops`  | Increase `intr_queue_maxlen`, toggle TSO if persistent.                         |
 | Out-of-order segs | `netstat -s`                           | Adjust TCP reassembly queue length (`reass.maxqueuelen`).                       |
-| FIN-WAIT-1 conns  | `netstat -an \| grep FIN_WAIT_1`        | Logged for diagnostic visibility (no dynamic tuning applied).                   |
-| FIN-WAIT-2 conns  | `netstat -an \| grep FIN_WAIT_2`        | Dynamically tuned via `net.inet.tcp.fast_finwait2_recycle` (threshold >5%).     |
-| ESTABLISHED conns | `netstat -an \| grep ESTABLISHED`       | Used as baseline for FIN-WAIT-2 ratio calculation.                              |
+| FIN-WAIT-1 conns  | `netstat -an | grep FIN_WAIT_1`        | Logged for diagnostic visibility (no dynamic tuning applied).                   |
+| FIN-WAIT-2 conns  | `netstat -an | grep FIN_WAIT_2`        | Dynamically tuned via `net.inet.tcp.fast_finwait2_recycle` (threshold >5%).     |
+| ESTABLISHED conns | `netstat -an | grep ESTABLISHED`       | Used as baseline for FIN-WAIT-2 ratio calculation.                              |
 
 ---
 
@@ -121,6 +123,11 @@ The net-autotuner continuously measures and logs the following metrics to guide 
 ---
 
 ## Example
+Simulation mode active (dry-run): no changes applied, only logged:
+```sh
+sudo fbsd-net-autotuner -n
+```
+
 Run with logging to file and timestamps:
 ```sh
 sudo fbsd-net-autotuner -d -l
@@ -210,3 +217,6 @@ sudo make uninstall
 ### v2.0 — 2026-04-25
 - Automatic backup creation for **/etc/sysctl.conf** and **/boot/loader.conf** for safe rollback.
 - Resolved problem with un‑commented variables in **/etc/sysctl.conf** and **/boot/loader.conf**.
+
+### v2.1 — 2026-04-29
+- Simulation mode active (dry-run): no changes applied, only logged.
