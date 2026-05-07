@@ -1,9 +1,36 @@
 # FreeBSD Network Autotuner
 
 ## Purpose
-Dynamically adjusts the TCP stack, congestion control algorithm, buffers, and queues based on real-time network metrics
-such as latency, packet loss, jitter, throughput, queue drops, out-of-order segments, FIN-WAIT-1/FIN-WAIT-2 sockets, and NIC speed.
-It is designed to optimize FreeBSD networking performance in diverse and changing conditions.
+The Network Autotuner was conceived as a mechanism for dynamic adjustment of kernel networking parameters in real time, particularly under high network load conditions where static sysctl values are insufficient.
+
+- Monitor live network metrics: latency (RTT), packet loss, jitter, throughput, interrupt queue drops, out‑of‑order segments, FIN‑WAIT states, NIC speed.
+- Apply immediate and persistent changes to kernel variables (sysctl, loader.conf) to optimize performance.
+- Automatically adapt to changing traffic conditions without manual intervention, ensuring stability and efficient bandwidth utilization.
+
+Key components:
+  - Dynamic TCP stack selection:
+    - FreeBSD -> default stack, robust under normal conditions.
+    - BBR -> optimized for high capacity and low latency.
+    - RACK -> effective in networks with reordering or packet loss.
+  - Congestion control algorithms available:
+    - Cubic -> modern standard, balanced performance.
+    - CHD / HD -> resilient under moderate loss.
+    - HTCP -> suited for high‑capacity, long‑RTT links.
+    - DCTCP -> efficient in ECN‑enabled environments.
+    - CDG -> designed for high jitter scenarios.
+    - Vegas -> excellent for low latency and zero loss.
+  - Dynamic buffer and queue tuning:
+    - Adjusts recvspace, sendspace, recvbuf_max, sendbuf_max based on BDP (Bandwidth‑Delay Product).
+    - Adapts intr_queue_maxlen when drops are detected.
+    - Tunes initcwnd_segments according to link stability.
+    - Enables/disables TSO, SACK, delayed ACK, keepalive depending on jitter and loss.
+
+The Network Autotuner is an adaptive system that:
+  - Continuously observes real‑time network conditions.
+  - Selects the most appropriate TCP stack and congestion control algorithm.
+  - Adjusts buffers, queues, and critical kernel parameters to maintain optimal performance under heavy load.
+
+Essentially, it acts as an automatic orchestrator of tunables, ensuring the system remains efficient and stable even in adverse traffic scenarios.
 
 ---
 
