@@ -4,9 +4,10 @@
 #
 # ========================================= Documentation =============================================
 # Purpose:
-#   Dynamically adjusts TCP stack, congestion control algorithm, buffers,
-#   and queues based on real-time network metrics (latency, packet loss, jitter,
-#   throughput, queue drops, out-of-order segments, FIN-WAIT-1/FIN-WAIT-2 sockets, and NIC speed).
+#   The Network Autotuner was conceived as a mechanism for dynamic adjustment of kernel networking
+#   parameters in real time, particularly under high network load conditions where static sysctl values
+#   are insufficient. Essentially, it acts as an automatic orchestrator of tunables, ensuring the system
+#   remains efficient and stable even in adverse traffic scenarios.
 #
 # Usage:
 #   sudo fbsd-net-autotuner [-d] [-l] [-n]
@@ -49,6 +50,9 @@
 #   - Provides flexible logging: terminal only, terminal + date, or file logging.
 #   - Automatic backup creation for /etc/sysctl.conf and /boot/loader.conf for safe rollback.
 #   - Simulation mode active (dry-run): no changes applied, only logged.
+#   - Dynamic PF optimization mode: automatically switches between conservative, normal, and aggressive.
+#   - Dynamic PF scrub rules: according to network conditions.
+#   - Initial backup check for pf.conf: creates a single persistent backup (pf.conf.bak) only if none exists.
 #
 # Requirements:
 #   - FreeBSD system with root privileges.
@@ -182,6 +186,120 @@ log(){
 # Alias for blocks that use log_event
 log_event() { log "$@"; }
 
+# Check if PF is active
+check_pf_active() {
+  pf_status="$(pfctl -si 2>/dev/null | grep Status | awk '{print $2}')"
+  if [ "$pf_status" == "Enabled" ]; then
+    true
+  else
+    echo "ERROR: PF is not enabled on this system."
+    exit 1
+  fi
+}
+
+apply_pf_optimization_dynamic() {
+  avg_ms="$1"; loss_pct="$2"; jitter="$3"
+
+  # Default mode
+  optimization="set optimization normal"
+
+  # High loss or jitter → conservative
+  if [ "$loss_pct" -ge 5 ] || [ "$jitter" -ge 50 ]; then
+    optimization="set optimization conservative"
+  # Very stable and low RTT → aggressive
+  elif [ "$loss_pct" -eq 0 ] && [ "$jitter" -lt 20 ] && [ "$avg_ms" -lt 50 ]; then
+    optimization="set optimization aggressive"
+  fi
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "[DRY-RUN] Would apply PF mode rule:"
+    echo "$optimization"
+  else
+    if grep -q "^set optimization" /etc/pf.conf; then
+      sed -i '' "s|^set optimization.*|$optimization|" /etc/pf.conf
+    else
+      # Insert before scrub rules if they exist, otherwise append
+      if grep -q "^scrub in" /etc/pf.conf; then
+        sed -i '' "/^scrub in/i\\
+$optimization
+" /etc/pf.conf
+      elif grep -q "^scrub out" /etc/pf.conf; then
+        sed -i '' "/^scrub out/i\\
+$optimization
+" /etc/pf.conf
+      else
+        echo "# Dynamic optimization rule by autotuner" >> /etc/pf.conf
+        echo "$optimization" >> /etc/pf.conf
+      fi
+    fi
+
+    # Reload PF with updated configuration
+    pfctl -f /etc/pf.conf || {
+      echo "ERROR: Failed to reload pf.conf, restoring backup"
+      cp "$pf_backup" /etc/pf.conf
+      exit 1
+    }
+  fi
+}
+
+# Apply dynamic PF scrub rules
+apply_pf_scrub_dynamic() {
+  avg_ms="$1"; loss_pct="$2"; jitter="$3"
+
+  # Default values for TTL, MSS, and TOS
+  min_ttl=0        # no enforced minimum TTL
+  max_mss=1460     # standard Ethernet MSS
+  tos="0x00"       # no TOS modification
+
+  # Adjust parameters based on network conditions
+  if [ "$loss_pct" -ge 5 ] || [ "$jitter" -ge 50 ]; then
+    min_ttl=20      # enforce minimum TTL for unstable links
+    max_mss=1000    # reduce MSS to mitigate fragmentation
+  elif [ "$avg_ms" -ge 200 ]; then
+    max_mss=1200    # adjust MSS for high RTT
+  elif [ "$loss_pct" -eq 0 ] && [ "$jitter" -lt 20 ]; then
+    max_mss=1400    # allow larger MSS in stable conditions
+    tos="0x10"      # prioritize interactive traffic
+  fi
+
+  # Build dynamic scrub rules for inbound and outbound traffic
+  scrub_in="scrub in  all random-id min-ttl $min_ttl max-mss $max_mss set-tos $tos fragment reassemble"
+  scrub_out="scrub out all random-id min-ttl $min_ttl max-mss $max_mss set-tos $tos fragment reassemble"
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    # Simulation mode: only print the rules
+    echo -e "[DRY-RUN] Would apply PF scrub rules:"
+    echo "$scrub_in"
+    echo -e "$scrub_out\n"
+  else
+    # Case 1: scrub in exists
+    if grep -q "^scrub in" /etc/pf.conf; then
+      sed -i '' "s|^scrub in.*|$scrub_in|" /etc/pf.conf
+      # Case 1a: scrub out also exists → replace it
+      if grep -q "^scrub out" /etc/pf.conf; then
+        sed -i '' "s|^scrub out.*|$scrub_out|" /etc/pf.conf
+      else
+        # Case 1b: scrub out does not exist → insert after scrub in
+        sed -i '' "/^scrub in/a\\
+$scrub_out
+" /etc/pf.conf
+      fi
+    else
+      # Case 2: no scrub rules exist → append both at the end
+      echo "# Dynamic scrub rules by autotuner" >> /etc/pf.conf
+      echo "$scrub_in" >> /etc/pf.conf
+      echo "$scrub_out" >> /etc/pf.conf
+    fi
+
+    # Reload PF with updated configuration
+    pfctl -f /etc/pf.conf || {
+      echo "ERROR: Failed to reload pf.conf, restoring backup"
+      cp "$pf_backup" /etc/pf.conf
+      exit 1
+    }
+  fi
+}
+
 # Backup before modifying loader.conf
 backup_loader_conf() {
   if [ -f /boot/loader.conf ]; then
@@ -218,7 +336,7 @@ set_sysctl_if_needed() {
     sed -i '' -E "s|^[[:space:]]*${key}[[:space:]]*=.*|${key}=${val}|" /etc/sysctl.conf
   else
     cp /etc/sysctl.conf /etc/sysctl.conf.$(date +%F-%T)
-    log "Backup created: /etc/sysctl.conf.bak.$(date +%F-%T)"
+    log "Backup created: /etc/sysctl.conf.$(date +%F-%T)"
     echo "# Added by fbsd-net-autotuner on $(date '+%F %T')" >> /etc/sysctl.conf
     echo "${key}=${val}" >> /etc/sysctl.conf
     log "Added persistent $key=$val to /etc/sysctl.conf"
@@ -457,11 +575,6 @@ adjust_fast_finwait2() {
 
     if [ "$current" != "$desired" ]; then
         set_sysctl_if_needed net.inet.tcp.fast_finwait2_recycle "$desired"
-        if [ "$desired" -eq 1 ]; then
-            log_event "Enabled fast FIN-WAIT-2 recycle (FIN-WAIT-2=$finwait2_conns, ESTABLISHED=$total_established, $percent%)"
-        else
-            log_event "Restored default FIN-WAIT-2 recycle behavior (FIN-WAIT-2=$finwait2_conns, ESTABLISHED=$total_established, $percent%)"
-        fi
     fi
 }
 
@@ -624,6 +737,13 @@ read rx0 tx0 <<EOF
 $(iface_bytes)
 EOF
 
+# Backup pf.conf only once, if not already backed up
+pf_backup="/etc/pf.conf.bak"
+if [ ! -f "$pf_backup" ]; then
+  cp /etc/pf.conf "$pf_backup"
+  log_event "Backup pf.conf only once to $pf_backup"
+fi
+
 while :; do
   start_ts=$(date +%s)
   read avg_ms jitter jitter_peak loss_pct <<EOF
@@ -702,12 +822,18 @@ EOF
   # Dynamic FIN-WAIT-2 cleanup
   adjust_fast_finwait2
 
+  # Apply dynamic PF scrub rules if PF is active
+  check_pf_active
+  apply_pf_optimization_dynamic "$avg_ms" "$loss_pct" "$jitter"
+  apply_pf_scrub_dynamic "$avg_ms" "$loss_pct" "$jitter"
+
   # Extended log
-  echo
-  log "BDP=${bdp_bytes}B RTT=${avg_ms}ms loss=${loss_pct}% jitter=${jitter}ms jitter_peak=${jitter_peak}ms thr=${thru_bps}bps
- drops=${intr_drops} out_of_order=${out_of_order} => tier=${tier}, stack=${stack_alg}, cc=${cc_alg}, recv=${recvspace},
- send=${sendspace}, ecn=${ecn}, sockmax=${sockmax}, intrq=${intrq}, recvbuf_max=${recvbuf_max}, sendbuf_max=${sendbuf_max},
- keepalive=${keepalive}, delayed_ack=${delayed_ack}, delacktime=${delacktime}, sack_enable=${sack_enable},
- intr_queue_maxlen=${intrq}, finwait1_conns=$(measure_finwait1), finwait2_conns=${finwait2_conns}, est_conns=${total_established}
+  set -- $optimization # Extract optimization mode
+  log "bdp=${bdp_bytes}B rtt=${avg_ms}ms loss=${loss_pct}% jitter=${jitter}ms jitter_peak=${jitter_peak}ms thr=${thru_bps}bps
+drops=${intr_drops} out_of_order=${out_of_order} => tier=${tier}, stack=${stack_alg}, cc=${cc_alg}, recv=${recvspace},
+send=${sendspace}, ecn=${ecn}, sockmax=${sockmax}, intrq=${intrq}, recvbuf_max=${recvbuf_max}, sendbuf_max=${sendbuf_max},
+keepalive=${keepalive}, delayed_ack=${delayed_ack}, delacktime=${delacktime}, sack_enable=${sack_enable},
+intr_queue_maxlen=${intrq}, finwait1_conns=$(measure_finwait1), finwait2_conns=${finwait2_conns}, est_conns=${total_established},
+pf_mode=${3}, pf_min-ttl=${min_ttl}, pf_max-mss=${max_mss}, pf_tos=${tos}
 "
 done

@@ -96,6 +96,9 @@ You can override these defaults by exporting environment variables before runnin
   - File logging.
 - Automatic backup creation for **/etc/sysctl.conf** and **/boot/loader.conf** for safe rollback.
 - Simulation mode active (dry-run): no changes applied, only logged.
+- Dynamic PF optimization mode: automatically switches between conservative, normal, and aggressive.
+- Dynamic PF scrub rules: according to network conditions.
+- Initial backup check for pf.conf: creates a single persistent backup (pf.conf.bak) only if none exists.
 
 ---
 
@@ -247,3 +250,8 @@ sudo make uninstall
 
 ### v2.1 — 2026-04-29
 - Simulation mode active (dry-run): no changes applied, only logged.
+
+### v2.2 — 2026-05-09
+- Dynamic PF optimization mode: automatically switches between conservative, normal, and aggressive.
+- Dynamic PF scrub rules: according to network conditions.
+- Initial backup check for pf.conf: creates a single persistent backup (pf.conf.bak) only if none exists.
