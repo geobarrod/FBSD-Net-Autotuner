@@ -186,17 +186,6 @@ log(){
 # Alias for blocks that use log_event
 log_event() { log "$@"; }
 
-# Check if PF is active
-check_pf_active() {
-  pf_status="$(pfctl -si 2>/dev/null | grep Status | awk '{print $2}')"
-  if [ "$pf_status" == "Enabled" ]; then
-    true
-  else
-    echo "ERROR: PF is not enabled on this system."
-    exit 1
-  fi
-}
-
 apply_pf_optimization_dynamic() {
   avg_ms="$1"; loss_pct="$2"; jitter="$3"
 
@@ -297,6 +286,23 @@ $scrub_out
       cp "$pf_backup" /etc/pf.conf
       exit 1
     }
+  fi
+}
+
+# Check if PF is active
+check_pf_active() {
+  pf_status="$(pfctl -si 2>/dev/null | grep Status | awk '{print $2}')"
+  if [ "$pf_status" == "Enabled" ]; then
+    # Backup pf.conf only once, if not already backed up
+    pf_backup="/etc/pf.conf.bak"
+    if [ ! -f "$pf_backup" ]; then
+        cp /etc/pf.conf "$pf_backup"
+        log_event "Backup pf.conf only once to $pf_backup"
+    fi
+    apply_pf_optimization_dynamic "$avg_ms" "$loss_pct" "$jitter"
+    apply_pf_scrub_dynamic "$avg_ms" "$loss_pct" "$jitter"
+  else
+    echo -e "\nINFO: The PF firewall is not enabled on this system. Enable it for further optimizations.\n"
   fi
 }
 
@@ -737,13 +743,6 @@ read rx0 tx0 <<EOF
 $(iface_bytes)
 EOF
 
-# Backup pf.conf only once, if not already backed up
-pf_backup="/etc/pf.conf.bak"
-if [ ! -f "$pf_backup" ]; then
-  cp /etc/pf.conf "$pf_backup"
-  log_event "Backup pf.conf only once to $pf_backup"
-fi
-
 while :; do
   start_ts=$(date +%s)
   read avg_ms jitter jitter_peak loss_pct <<EOF
@@ -824,8 +823,6 @@ EOF
 
   # Apply dynamic PF scrub rules if PF is active
   check_pf_active
-  apply_pf_optimization_dynamic "$avg_ms" "$loss_pct" "$jitter"
-  apply_pf_scrub_dynamic "$avg_ms" "$loss_pct" "$jitter"
 
   # Extended log
   set -- $optimization # Extract optimization mode
